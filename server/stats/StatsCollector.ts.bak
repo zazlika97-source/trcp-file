@@ -1,0 +1,183 @@
+import { logger } from '../utils/Logger';
+import os from 'os';
+
+export interface SystemStats {
+  cpu: {
+    usage: number;
+    cores: number[];
+    speed: number;
+    uptime: number;
+    loadAverage: number[];
+  };
+  memory: {
+    total: number;
+    used: number;
+    free: number;
+    usagePercent: number;
+  };
+  disk: Array<{
+    mount: string;
+    total: number;
+    used: number;
+    free: number;
+    usagePercent: number;
+  }>;
+  network: Array<{
+    interface: string;
+    bytesIn: number;
+    bytesOut: number;
+    packetsIn: number;
+    packetsOut: number;
+  }>;
+  processes: {
+    total: number;
+    running: number;
+  };
+  timestamp: number;
+}
+
+export class StatsCollector {
+  private interval: NodeJS.Timeout | null = null;
+  private currentStats: SystemStats | null = null;
+  private statsHistory: SystemStats[] = [];
+  private maxHistorySize: number = 60;
+  private startTime: number; // Untuk menghitung uptime manual
+
+  constructor() {
+    this.startTime = Date.now(); // Catat waktu mulai server
+    logger.info('StatsCollector initialized (Termux fallback mode with manual uptime)');
+  }
+
+  async collectStats(): Promise<SystemStats> {
+    // Hitung uptime manual (dalam detik)
+    const uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+    
+    // Fallback stats menggunakan Node.js os module
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    
+    // Get disk info (hanya untuk root partition)
+    let disks: Array<any> = [];
+    try {
+      const { execSync } = await import('child_process');
+      const dfOutput = execSync('df -B1 /').toString();
+      const lines = dfOutput.split('\n');
+      const dataLine = lines[1]?.split(/\s+/);
+      if (dataLine && dataLine.length >= 6) {
+        disks = [{
+          mount: dataLine[5],
+          total: parseInt(dataLine[1]),
+          used: parseInt(dataLine[2]),
+          free: parseInt(dataLine[3]),
+          usagePercent: parseFloat(dataLine[4]),
+        }];
+      }
+    } catch (err) {
+      disks = [{
+        mount: '/',
+        total: totalMem,
+        used: usedMem,
+        free: freeMem,
+        usagePercent: (usedMem / totalMem) * 100,
+      }];
+    }
+
+    const stats: SystemStats = {
+      cpu: {
+        usage: Math.min(100, Math.max(0, os.loadavg()[0] * 10)),
+        cores: os.cpus().length,
+        speed: os.cpus()[0]?.speed || 0,
+        uptime: uptimeSeconds, // Pakai uptime manual
+        loadAverage: os.loadavg(),
+      },
+      memory: {
+        total: totalMem,
+        used: usedMem,
+        free: freeMem,
+        usagePercent: (usedMem / totalMem) * 100,
+      },
+      disk: disks,
+      network: [],
+      processes: {
+        total: 0,
+        running: 0,
+      },
+      timestamp: Date.now(),
+    };
+
+    this.currentStats = stats;
+    this.addToHistory(stats);
+    
+    // Format uptime untuk log
+    const uptimeFormatted = this.formatUptime(uptimeSeconds);
+    logger.debug(`Stats: Uptime ${uptimeFormatted}, CPU ${stats.cpu.usage.toFixed(1)}%, MEM ${stats.memory.usagePercent.toFixed(1)}%`);
+    
+    return stats;
+  }
+
+  private formatUptime(seconds: number): string {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  private addToHistory(stats: SystemStats) {
+    this.statsHistory.push(stats);
+    if (this.statsHistory.length > this.maxHistorySize) {
+      this.statsHistory.shift();
+    }
+  }
+
+  async getCurrentStats(): Promise<SystemStats> {
+    if (!this.currentStats) {
+      return await this.collectStats();
+    }
+    return this.currentStats;
+  }
+
+  async getStatsHistory(duration: number = 60000): Promise<SystemStats[]> {
+    const cutoff = Date.now() - duration;
+    return this.statsHistory.filter(stat => stat.timestamp >= cutoff);
+  }
+
+  getUptime(): number {
+    return Math.floor((Date.now() - this.startTime) / 1000);
+  }
+
+  getFormattedUptime(): string {
+    return this.formatUptime(this.getUptime());
+  }
+
+  startCollecting(intervalMs: number = 300) {
+    if (this.interval) {
+      clearInterval(this.interval);
+    }
+
+    // Kumpulkan stat pertama kali
+    this.collectStats();
+    
+    // Kumpulkan stat secara periodik
+    this.interval = setInterval(() => {
+      this.collectStats();
+    }, intervalMs);
+
+    logger.info(`Stats collection started (interval: ${intervalMs}ms)`);
+    logger.info(`Server uptime tracking started at: ${new Date(this.startTime).toLocaleString()}`);
+  }
+
+  stopCollecting() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+      logger.info('Stats collection stopped');
+      logger.info(`Total server uptime: ${this.getFormattedUptime()}`);
+    }
+  }
+}

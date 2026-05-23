@@ -1,0 +1,94 @@
+import { useState, useEffect } from 'react';
+
+interface Stats {
+  cpu: { usage: number; cores: number[]; speed: number; uptime: number; loadAverage: number[] };
+  memory: { total: number; used: number; free: number; usage: number };
+  storage: { total: number; used: number; free: number; usage: number };
+  network: { rx: number; tx: number; rxSec: number; txSec: number };
+  os: { hostname: string; platform: string; distro: string; uptime: number };
+  temperature: number | null;
+}
+
+export function useStats(): Stats {
+  const [stats, setStats] = useState<Stats>({
+    cpu: { usage: 0, cores: [], speed: 0, uptime: 0, loadAverage: [0, 0, 0] },
+    memory: { total: 0, used: 0, free: 0, usage: 0 },
+    storage: { total: 0, used: 0, free: 0, usage: 0 },
+    network: { rx: 0, tx: 0, rxSec: 0, txSec: 0 },
+    os: { hostname: 'Termux', platform: 'Android', distro: 'Termux', uptime: 0 },
+    temperature: null,
+  });
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const response = await fetch('/api/stats');
+        const data = await response.json();
+        
+        console.log('Stats API response:', data);
+        
+        if (data.success && data.stats) {
+          const s = data.stats;
+          
+          // Hitung network rates
+          let rxSec = 0, txSec = 0;
+          if (s.network && s.network.length > 0 && stats.network) {
+            const totalRx = s.network.reduce((sum: number, net: any) => sum + (net.bytesIn || 0), 0);
+            const totalTx = s.network.reduce((sum: number, net: any) => sum + (net.bytesOut || 0), 0);
+            const timeDiff = (Date.now() - (stats.network.timestamp || Date.now())) / 1000;
+            if (timeDiff > 0 && stats.network.rx) {
+              rxSec = (totalRx - stats.network.rx) / timeDiff;
+              txSec = (totalTx - stats.network.tx) / timeDiff;
+            }
+          }
+          
+          // Get primary disk
+          const primaryDisk = s.disk && s.disk.length > 0 ? s.disk[0] : null;
+          
+          setStats({
+            cpu: {
+              usage: Math.round(s.cpu?.usage || 0),
+              cores: s.cpu?.cores || [],
+              speed: s.cpu?.speed || 0,
+              uptime: s.cpu?.uptime || 0,
+              loadAverage: s.cpu?.loadAverage || [0, 0, 0],
+            },
+            memory: {
+              total: s.memory?.total || 0,
+              used: s.memory?.used || 0,
+              free: s.memory?.free || 0,
+              usage: Math.round(s.memory?.usagePercent || 0),
+            },
+            storage: {
+              total: primaryDisk?.total || 0,
+              used: primaryDisk?.used || 0,
+              free: primaryDisk?.free || 0,
+              usage: Math.round(primaryDisk?.usagePercent || 0),
+            },
+            network: {
+              rx: s.network?.reduce((sum: number, net: any) => sum + (net.bytesIn || 0), 0) || 0,
+              tx: s.network?.reduce((sum: number, net: any) => sum + (net.bytesOut || 0), 0) || 0,
+              rxSec: Math.max(0, Math.round(rxSec)),
+              txSec: Math.max(0, Math.round(txSec)),
+            },
+            os: {
+              hostname: 'Termux',
+              platform: 'Android',
+              distro: 'Termux',
+              uptime: s.cpu?.uptime || 0,
+            },
+            temperature: null,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to fetch stats:', error);
+      }
+    };
+
+    fetchStats();
+    const interval = setInterval(fetchStats, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return stats;
+}

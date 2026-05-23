@@ -1,0 +1,476 @@
+import { useState } from 'react';
+import { useSessions } from '@/hooks/useSessions';
+import type { Session, SessionCreateData } from '@/types';
+import {
+  Plus,
+  Play,
+  Square,
+  RotateCw,
+  Trash2,
+  Copy,
+  Terminal,
+  ChevronDown,
+  ChevronUp,
+  X,
+  AlertTriangle,
+  Zap,
+  Server,
+  Edit3,  // ← Tambahkan Edit3
+} from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+function formatTime(ms: number): string {
+  const date = new Date(ms);
+  return date.toLocaleTimeString('en-US', { hour12: false });
+}
+
+// Props untuk SessionCard
+interface SessionCardProps {
+  session: Session;
+  onEdit: (session: Session) => void;  // ← Tambahkan prop onEdit
+  onRefresh: () => void;               // ← Tambahkan prop onRefresh
+}
+
+function SessionCard({ session, onEdit, onRefresh }: SessionCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  const {
+    startSession,
+    stopSession,
+    restartSession,
+    killSession,
+    deleteSession,
+    duplicateSession,
+  } = useSessions();
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm(`Delete session "${session.name}"?`)) {
+      await deleteSession(session.id);
+      onRefresh();
+    }
+  };
+
+  const handleDuplicate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await duplicateSession(session.id);
+    onRefresh();
+  };
+
+  return (
+    <div className="panel animate-fade-in">
+      {/* Card Header */}
+      <div
+        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-[#1a1f2a] transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span
+            className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+              session.status === 'running'
+                ? 'bg-[#57c27e]'
+                : session.status === 'error'
+                ? 'bg-[#ff6b6b]'
+                : session.status === 'starting'
+                ? 'bg-[#4fa3ff]'
+                : 'bg-[#8b93a7]'
+            }`}
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[#d6dbe4] truncate">{session.name}</p>
+            <p className="text-[10px] text-[#8b93a7] font-mono truncate">{session.command}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className={`text-xs font-mono px-2 py-0.5 rounded ${
+            session.status === 'running' ? 'bg-[#57c27e]/10 text-[#57c27e]' :
+            session.status === 'error' ? 'bg-[#ff6b6b]/10 text-[#ff6b6b]' :
+            session.status === 'starting' ? 'bg-[#4fa3ff]/10 text-[#4fa3ff]' :
+            'bg-[#8b93a7]/10 text-[#8b93a7]'
+          }`}>
+            {session.status}
+          </span>
+          {expanded ? (
+            <ChevronUp className="w-4 h-4 text-[#8b93a7]" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-[#8b93a7]" />
+          )}
+        </div>
+      </div>
+
+      {/* Expanded Details */}
+      {expanded && (
+        <div className="px-4 pb-4 border-t border-[#262c36] pt-3 space-y-3">
+          {/* Info Grid */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-[#8b93a7]">PID:</span>{' '}
+              <span className="font-mono text-[#d6dbe4]">{session.pid || '—'}</span>
+            </div>
+            <div>
+              <span className="text-[#8b93a7]">Restarts:</span>{' '}
+              <span className="font-mono text-[#d6dbe4]">{session.restartCount}</span>
+            </div>
+            <div className="col-span-2">
+              <span className="text-[#8b93a7]">CWD:</span>{' '}
+              <span className="font-mono text-[#d6dbe4] truncate">{session.cwd}</span>
+            </div>
+            <div>
+              <span className="text-[#8b93a7]">Created:</span>{' '}
+              <span className="font-mono text-[#d6dbe4]">{formatTime(session.createdAt)}</span>
+            </div>
+            <div>
+              <span className="text-[#8b93a7]">Auto-restart:</span>{' '}
+              <span className={session.autoRestart ? 'text-[#57c27e]' : 'text-[#8b93a7]'}>
+                {session.autoRestart ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {session.status === 'running' ? (
+              <>
+                <button
+                  onClick={(e) => { e.stopPropagation(); stopSession(session.id); onRefresh(); }}
+                  className="btn-secondary flex items-center gap-1.5 text-xs"
+                >
+                  <Square className="w-3 h-3" /> Stop
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); restartSession(session.id); onRefresh(); }}
+                  className="btn-secondary flex items-center gap-1.5 text-xs"
+                >
+                  <RotateCw className="w-3 h-3" /> Restart
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); killSession(session.id); onRefresh(); }}
+                  className="btn-danger flex items-center gap-1.5 text-xs"
+                >
+                  <Zap className="w-3 h-3" /> Kill
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={(e) => { e.stopPropagation(); startSession(session.id); onRefresh(); }}
+                className="btn-success flex items-center gap-1.5 text-xs"
+              >
+                <Play className="w-3 h-3" /> Start
+              </button>
+            )}
+            <Link
+              to={`/terminal?session=${session.id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="btn-secondary flex items-center gap-1.5 text-xs"
+            >
+              <Terminal className="w-3 h-3" /> Terminal
+            </Link>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleDuplicate(e); }}
+              className="btn-secondary flex items-center gap-1.5 text-xs"
+            >
+              <Copy className="w-3 h-3" /> Duplicate
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(session); }}
+              className="btn-secondary flex items-center gap-1.5 text-xs"
+            >
+              <Edit3 className="w-3 h-3" /> Edit
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleDelete(e); }}
+              className="btn-danger flex items-center gap-1.5 text-xs ml-auto"
+            >
+              <Trash2 className="w-3 h-3" /> Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SessionsPage() {
+  const { sessions, loading, createSession, refreshSessions } = useSessions();
+  const [showCreate, setShowCreate] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editingSession, setEditingSession] = useState<Session | null>(null);
+  const [formData, setFormData] = useState<SessionCreateData>({
+    name: '',
+    command: '',
+    cwd: '',
+    env: {},
+    autoRestart: false,
+    maxRestarts: 5,
+  });
+  const [editFormData, setEditFormData] = useState({
+    name: '',
+    command: '',
+    cwd: '',
+    autoRestart: false,
+    maxRestarts: 5,
+  });
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs: string[] = [];
+    if (!formData.name.trim()) errs.push('Name is required');
+    if (!formData.command.trim()) errs.push('Command is required');
+    if (errs.length > 0) {
+      setErrors(errs);
+      return;
+    }
+
+    const result = await createSession(formData);
+    if (result?.success) {
+      setShowCreate(false);
+      setFormData({ name: '', command: '', cwd: '', env: {}, autoRestart: false, maxRestarts: 5 });
+      setErrors([]);
+      refreshSessions();
+    }
+  };
+
+  const handleEdit = (session: Session) => {
+    setEditingSession(session);
+    setEditFormData({
+      name: session.name,
+      command: session.command,
+      cwd: session.cwd || '',
+      autoRestart: session.autoRestart,
+      maxRestarts: session.maxRestarts,
+    });
+    setShowEdit(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingSession) return;
+    
+    try {
+      const response = await fetch(`/api/sessions/${editingSession.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editFormData),
+      });
+      
+      if (response.ok) {
+        setShowEdit(false);
+        setEditingSession(null);
+        refreshSessions();
+      } else {
+        alert('Failed to update session');
+      }
+    } catch (error) {
+      console.error('Error updating session:', error);
+      alert('Error updating session');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-[#8b93a7] text-sm">Loading sessions...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 animate-fade-in">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-[#d6dbe4]">Sessions</h1>
+          <p className="text-xs text-[#8b93a7] font-mono mt-0.5">
+            {sessions.filter(s => s.status === 'running').length} running / {sessions.length} total
+          </p>
+        </div>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className="btn-primary flex items-center gap-2"
+        >
+          {showCreate ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+          {showCreate ? 'Cancel' : 'New Session'}
+        </button>
+      </div>
+
+      {/* Create Form */}
+      {showCreate && (
+        <div className="panel p-4 animate-slide-up">
+          <h2 className="text-sm font-medium text-[#d6dbe4] mb-3">Create New Session</h2>
+          {errors.length > 0 && (
+            <div className="mb-3 p-2 bg-[#ff6b6b]/10 border border-[#ff6b6b]/30 rounded">
+              <div className="flex items-center gap-1.5 mb-1">
+                <AlertTriangle className="w-3.5 h-3.5 text-[#ff6b6b]" />
+                <span className="text-xs text-[#ff6b6b] font-medium">Validation Error</span>
+              </div>
+              {errors.map((err, i) => (
+                <p key={i} className="text-xs text-[#ff6b6b]/80 ml-5">{err}</p>
+              ))}
+            </div>
+          )}
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-[#8b93a7] mb-1">Session Name</label>
+                <input
+                  type="text"
+                  className="input-field w-full"
+                  placeholder="e.g., bot-wa-1"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#8b93a7] mb-1">Startup Command</label>
+                <input
+                  type="text"
+                  className="input-field w-full"
+                  placeholder="e.g., npm run dev"
+                  value={formData.command}
+                  onChange={(e) => setFormData({ ...formData, command: e.target.value })}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-[#8b93a7] mb-1">Working Directory (optional)</label>
+              <input
+                type="text"
+                className="input-field w-full"
+                placeholder="Auto-generated if empty"
+                value={formData.cwd || ''}
+                onChange={(e) => setFormData({ ...formData, cwd: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="rounded border-[#262c36] bg-[#0f1115] text-[#4fa3ff]"
+                  checked={formData.autoRestart}
+                  onChange={(e) => setFormData({ ...formData, autoRestart: e.target.checked })}
+                />
+                <span className="text-xs text-[#8b93a7]">Auto-restart</span>
+              </label>
+              {formData.autoRestart && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[#8b93a7]">Max restarts:</span>
+                  <input
+                    type="number"
+                    className="input-field w-16"
+                    min={1}
+                    max={20}
+                    value={formData.maxRestarts}
+                    onChange={(e) => setFormData({ ...formData, maxRestarts: parseInt(e.target.value) || 5 })}
+                  />
+                </div>
+              )}
+            </div>
+            <button type="submit" className="btn-primary w-full md:w-auto">
+              <Plus className="w-4 h-4 inline mr-1" /> Create Session
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Sessions List */}
+      <div className="space-y-2">
+        {sessions.length === 0 ? (
+          <div className="panel p-8 text-center">
+            <Server className="w-8 h-8 text-[#262c36] mx-auto mb-2" />
+            <p className="text-sm text-[#8b93a7]">No sessions yet</p>
+            <p className="text-xs text-[#8b93a7] mt-1">Create a new session to get started</p>
+          </div>
+        ) : (
+          sessions.map((session) => (
+            <SessionCard 
+              key={session.id} 
+              session={session} 
+              onEdit={handleEdit}
+              onRefresh={refreshSessions}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Edit Modal */}
+      {showEdit && editingSession && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowEdit(false)}>
+          <div className="panel w-full max-w-md p-4 mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-[#d6dbe4]">Edit Session</h2>
+              <button onClick={() => setShowEdit(false)} className="text-[#8b93a7] hover:text-[#d6dbe4]">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[#8b93a7] mb-1">Session Name</label>
+                <input
+                  type="text"
+                  className="input-field w-full"
+                  value={editFormData.name}
+                  onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
+                />
+              </div>
+              
+              <div>
+                <label className="block text-xs text-[#8b93a7] mb-1">Startup Command</label>
+                <input
+                  type="text"
+                  className="input-field w-full"
+                  value={editFormData.command}
+                  onChange={(e) => setEditFormData({ ...editFormData, command: e.target.value })}
+                />
+              </div>
+              
+              <div>
+                <label className="block text-xs text-[#8b93a7] mb-1">Working Directory</label>
+                <input
+                  type="text"
+                  className="input-field w-full"
+                  value={editFormData.cwd}
+                  onChange={(e) => setEditFormData({ ...editFormData, cwd: e.target.value })}
+                />
+              </div>
+              
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="rounded border-[#262c36] bg-[#0f1115] text-[#4fa3ff]"
+                    checked={editFormData.autoRestart}
+                    onChange={(e) => setEditFormData({ ...editFormData, autoRestart: e.target.checked })}
+                  />
+                  <span className="text-xs text-[#8b93a7]">Auto-restart</span>
+                </label>
+                
+                {editFormData.autoRestart && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[#8b93a7]">Max restarts:</span>
+                    <input
+                      type="number"
+                      className="input-field w-16"
+                      min={1}
+                      max={20}
+                      value={editFormData.maxRestarts}
+                      onChange={(e) => setEditFormData({ ...editFormData, maxRestarts: parseInt(e.target.value) || 5 })}
+                    />
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex gap-2 pt-2">
+                <button onClick={() => setShowEdit(false)} className="btn-secondary flex-1">
+                  Cancel
+                </button>
+                <button onClick={handleSaveEdit} className="btn-primary flex-1">
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

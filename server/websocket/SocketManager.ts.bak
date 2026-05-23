@@ -1,0 +1,291 @@
+import { Server as HttpServer } from 'http';
+import { Server as SocketIOServer, Socket } from 'socket.io';
+import { SessionManager } from '../sessions/SessionManager';
+import { TerminalManager } from '../terminal/TerminalManager';
+import { FileManager } from '../filesystem/FileManager';
+import { StatsCollector } from '../stats/StatsCollector';
+import { eventBus } from '../events/EventBus';
+import { logger } from '../utils/Logger';
+import { TerminalSize } from '../core/types';
+
+export class SocketManager {
+  private io: SocketIOServer;
+  private sessionManager: SessionManager;
+  private terminalManager: TerminalManager;
+  private fileManager: FileManager;
+  private statsCollector: StatsCollector;
+
+  constructor(
+    httpServer: HttpServer,
+    sessionManager: SessionManager,
+    terminalManager: TerminalManager,
+    fileManager: FileManager,
+    statsCollector: StatsCollector
+  ) {
+    this.sessionManager = sessionManager;
+    this.terminalManager = terminalManager;
+    this.fileManager = fileManager;
+    this.statsCollector = statsCollector;
+
+    this.io = new SocketIOServer(httpServer, {
+      cors: {
+        origin: '*',
+        methods: ['GET', 'POST'],
+      },
+      path: '/socket.io',
+    });
+
+    this.setupEventBusForwarding();
+    this.setupConnectionHandler();
+  }
+
+  private setupEventBusForwarding() {
+    // Forward all realtime events to connected clients
+    eventBus.on('terminal:data', ({ terminalId, sessionId, data }) => {
+      this.io.to(`session:${sessionId}`).emit('terminal:data', { terminalId, data });
+    });
+
+    eventBus.on('terminal:exit', ({ terminalId, sessionId, exitCode }) => {
+      this.io.to(`session:${sessionId}`).emit('terminal:exit', { terminalId, exitCode });
+    });
+
+    eventBus.on('logs:update', (logEntry) => {
+      this.io.to(`session:${logEntry.sessionId}`).emit('logs:update', logEntry);
+      this.io.emit('logs:update', logEntry);
+    });
+
+    eventBus.on('stats:update', (stats) => {
+      this.io.emit('stats:update', stats);
+    });
+
+    eventBus.on('process:update', (update) => {
+      this.io.to(`session:${update.sessionId}`).emit('process:update', update);
+    });
+
+    eventBus.on('process:exit', ({ sessionId, code, signal }) => {
+      this.io.to(`session:${sessionId}`).emit('process:exit', { sessionId, code, signal });
+      this.io.emit('session:update', this.sessionManager.get(sessionId));
+    });
+
+    eventBus.on('session:update', (session) => {
+      this.io.emit('session:update', session);
+    });
+
+    eventBus.on('session:create', (session) => {
+      this.io.emit('session:create', session);
+    });
+
+    eventBus.on('session:delete', ({ sessionId }) => {
+      this.io.emit('session:delete', { sessionId });
+    });
+  }
+
+  private setupConnectionHandler() {
+    this.io.on('connection', (socket: Socket) => {
+      logger.info(`Client connected: ${socket.id}`);
+
+      // Join session room
+      socket.on('session:join', (sessionId: string) => {
+        socket.join(`session:${sessionId}`);
+        logger.debug(`Socket ${socket.id} joined session: ${sessionId}`);
+      });
+
+      socket.on('session:leave', (sessionId: string) => {
+        socket.leave(`session:${sessionId}`);
+        logger.debug(`Socket ${socket.id} left session: ${sessionId}`);
+      });
+
+      // Session events
+      socket.on('session:list', () => {
+        socket.emit('session:list', this.sessionManager.getAll());
+      });
+
+      socket.on('session:create', async (data, callback) => {
+        try {
+          const session = this.sessionManager.create(data);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:start', async (sessionId: string, callback) => {
+        try {
+          const session = await this.sessionManager.start(sessionId);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:stop', (sessionId: string, callback) => {
+        try {
+          const session = this.sessionManager.stop(sessionId);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:restart', async (sessionId: string, callback) => {
+        try {
+          const session = await this.sessionManager.restart(sessionId);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:kill', (sessionId: string, callback) => {
+        try {
+          const session = this.sessionManager.kill(sessionId);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:delete', (sessionId: string, callback) => {
+        try {
+          const result = this.sessionManager.delete(sessionId);
+          callback?.({ success: result });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('session:duplicate', (sessionId: string, callback) => {
+        try {
+          const session = this.sessionManager.duplicate(sessionId);
+          callback?.({ success: true, session });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      // Terminal events
+      socket.on('terminal:create', ({ sessionId, size, cwd }, callback) => {
+        try {
+          const terminalId = this.terminalManager.createTerminal(
+            sessionId,
+            socket.id,
+            size as TerminalSize,
+            cwd
+          );
+          socket.join(`session:${sessionId}`);
+          callback?.({ success: true, terminalId });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('terminal:write', ({ terminalId, data }) => {
+        this.terminalManager.write(terminalId, data);
+      });
+
+      socket.on('terminal:resize', ({ terminalId, size }) => {
+        this.terminalManager.resize(terminalId, size as TerminalSize);
+      });
+
+      socket.on('terminal:kill', ({ terminalId }, callback) => {
+        try {
+          const result = this.terminalManager.kill(terminalId);
+          callback?.({ success: result });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      // File events
+      socket.on('file:list', (dirPath: string, callback) => {
+        try {
+          const files = this.fileManager.list(dirPath);
+          callback?.({ success: true, files });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:read', (filePath: string, callback) => {
+        try {
+          const result = this.fileManager.readFile(filePath);
+          callback?.({ success: true, ...result });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:write', ({ filePath, content }, callback) => {
+        try {
+          this.fileManager.writeFile(filePath, content);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:mkdir', (dirPath: string, callback) => {
+        try {
+          this.fileManager.createDirectory(dirPath);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:rename', ({ oldPath, newPath }, callback) => {
+        try {
+          this.fileManager.rename(oldPath, newPath);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:delete', (itemPath: string, callback) => {
+        try {
+          this.fileManager.delete(itemPath);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:compress', ({ sourcePath, zipPath }, callback) => {
+        try {
+          this.fileManager.compressToZip(sourcePath, zipPath);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('file:extract', ({ zipPath, destPath }, callback) => {
+        try {
+          this.fileManager.extractZip(zipPath, destPath);
+          callback?.({ success: true });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      // Stats
+      socket.on('stats:get', async (callback) => {
+        try {
+          const stats = await this.statsCollector.getCurrentStats();
+          callback?.({ success: true, stats });
+        } catch (err: any) {
+          callback?.({ success: false, error: err.message });
+        }
+      });
+
+      socket.on('disconnect', () => {
+        logger.info(`Client disconnected: ${socket.id}`);
+      });
+    });
+  }
+
+  getIO(): SocketIOServer {
+    return this.io;
+  }
+}

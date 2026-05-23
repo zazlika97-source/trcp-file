@@ -1,0 +1,175 @@
+import { spawn, ChildProcess } from 'child_process';
+import { Session, ProcessInfo } from '../core/types';
+import { eventBus } from '../events/EventBus';
+import { logger } from '../utils/Logger';
+import fs from 'fs';
+import path from 'path';
+
+interface TrackedProcess {
+  process: ChildProcess;
+  sessionId: string;
+  startTime: number;
+  stdout: string[];
+  stderr: string[];
+}
+
+export class ProcessManager {
+  private processes: Map<number, TrackedProcess> = new Map();
+  private stats: Map<number, ProcessInfo> = new Map();
+
+  constructor() {
+    this.startStatsCollector();
+  }
+
+  async spawn(session: Session): Promise<ChildProcess | null> {
+    try {
+      const [command, ...args] = session.command.split(' ');
+      const env = { ...process.env, ...session.env };
+
+      const childProcess = spawn(command, args, {
+        cwd: session.cwd,
+        env,
+        detached: false,
+        shell: true,
+      });
+
+      if (!childProcess.pid) {
+        logger.error(`Failed to spawn process for session: ${session.name}`);
+        return null;
+      }
+
+      const tracked: TrackedProcess = {
+        process: childProcess,
+        sessionId: session.id,
+        startTime: Date.now(),
+        stdout: [],
+        stderr: [],
+      };
+
+      this.processes.set(childProcess.pid, tracked);
+
+      const logDir = path.join(session.cwd, 'logs');
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, 'output.log');
+      const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+      childProcess.stdout?.on('data', (data: Buffer) => {
+        const output = data.toString();
+        tracked.stdout.push(output);
+        if (tracked.stdout.length > 1000) tracked.stdout.shift();
+        logStream.write(`[OUT] ${output}`);
+        eventBus.emit('logs:update', {
+          sessionId: session.id,
+          level: 'info',
+          message: output,
+          timestamp: Date.now(),
+        });
+      });
+
+      childProcess.stderr?.on('data', (data: Buffer) => {
+        const output = data.toString();
+        tracked.stderr.push(output);
+        if (tracked.stderr.length > 1000) tracked.stderr.shift();
+        logStream.write(`[ERR] ${output}`);
+        eventBus.emit('logs:update', {
+          sessionId: session.id,
+          level: 'error',
+          message: output,
+          timestamp: Date.now(),
+        });
+      });
+
+      childProcess.on('exit', (code, signal) => {
+        logStream.end();
+        this.processes.delete(childProcess.pid!);
+        this.stats.delete(childProcess.pid!);
+        eventBus.emit('process:exit', {
+          sessionId: session.id,
+          pid: childProcess.pid,
+          code,
+          signal,
+        });
+      });
+
+      childProcess.on('error', (err) => {
+        logger.error(`Process error for session ${session.name}:`, err);
+        logStream.end();
+        this.processes.delete(childProcess.pid!);
+        this.stats.delete(childProcess.pid!);
+        eventBus.emit('process:exit', {
+          sessionId: session.id,
+          pid: childProcess.pid,
+          code: -1,
+          signal: null,
+          error: err.message,
+        });
+      });
+
+      logger.info(`Spawned process: ${command} (PID: ${childProcess.pid})`);
+      return childProcess;
+    } catch (err) {
+      logger.error(`Failed to spawn process for session ${session.name}:`, err);
+      return null;
+    }
+  }
+
+  kill(pid: number, signal: string = 'SIGTERM'): boolean {
+    const tracked = this.processes.get(pid);
+    if (!tracked) return false;
+
+    try {
+      tracked.process.kill(signal as NodeJS.Signals);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to kill process ${pid}:`, err);
+      return false;
+    }
+  }
+
+  getProcessInfo(pid: number): ProcessInfo | null {
+    const tracked = this.processes.get(pid);
+    if (!tracked) return null;
+
+    const uptime = Date.now() - tracked.startTime;
+    return {
+      pid,
+      status: tracked.process.killed ? 'stopped' : 'running',
+      cpu: 0,
+      ram: 0,
+      uptime,
+      cwd: tracked.process.spawnargs.join(' '),
+      command: tracked.process.spawnargs.join(' '),
+      restartCount: 0,
+    };
+  }
+
+  getAllProcesses(): ProcessInfo[] {
+    return Array.from(this.processes.keys())
+      .map(pid => this.getProcessInfo(pid))
+      .filter((info): info is ProcessInfo => info !== null);
+  }
+
+  getRecentLogs(pid: number, maxLines: number = 100): { stdout: string; stderr: string } {
+    const tracked = this.processes.get(pid);
+    if (!tracked) return { stdout: '', stderr: '' };
+    return {
+      stdout: tracked.stdout.slice(-maxLines).join(''),
+      stderr: tracked.stderr.slice(-maxLines).join(''),
+    };
+  }
+
+  private startStatsCollector() {
+    setInterval(() => {
+      for (const [pid, tracked] of this.processes) {
+        if (tracked.process.killed) continue;
+        // CPU/RAM stats would require systeminformation per PID
+        // For now, emit basic stats
+        eventBus.emit('process:update', {
+          sessionId: tracked.sessionId,
+          pid,
+          uptime: Date.now() - tracked.startTime,
+        });
+      }
+    }, 5000);
+  }
+}

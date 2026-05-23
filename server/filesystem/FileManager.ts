@@ -1,0 +1,334 @@
+import fs from 'fs';
+import path from 'path';
+import { FileEntry } from '../types';
+import { logger } from '../utils/Logger';
+import AdmZip from 'adm-zip';
+
+export class FileManager {
+  private allowedPaths: string[];
+
+  constructor(allowedPaths?: string[]) {
+    // Default workspace di storage Android
+    const defaultWorkspace = '/storage/emulated/0/workspace';
+    
+    // Pastikan folder workspace ada
+    if (!fs.existsSync(defaultWorkspace)) {
+      try {
+        fs.mkdirSync(defaultWorkspace, { recursive: true });
+        logger.info(`Created default workspace: ${defaultWorkspace}`);
+      } catch (error) {
+        logger.warn(`Failed to create workspace: ${error}`);
+      }
+    }
+    
+    // Default allowed paths dengan workspace di storage Android
+    this.allowedPaths = allowedPaths || [
+      // Workspace utama di storage Android
+      defaultWorkspace,
+      '/storage/emulated/0/workspace',
+      
+      // Storage Android paths
+      '/storage',
+      '/storage/emulated',
+      '/storage/emulated/0',
+      '/storage/emulated/0/Download',
+      '/storage/emulated/0/Documents',
+      '/storage/emulated/0/DCIM',
+      '/storage/emulated/0/Pictures',
+      '/storage/emulated/0/Music',
+      '/storage/emulated/0/Movies',
+      
+      // Termux paths (melalui symlink)
+      '/data/data/com.termux/files/home/storage',
+      '/data/data/com.termux/files/home/storage/shared',
+      
+      // Symlink paths
+      '/sdcard',
+      '/sdcard/workspace',
+      
+      // Project paths (untuk akses ke code)
+      '/root',
+      '/root/termux2',
+      process.cwd(),
+      path.join(process.cwd(), 'workspaces'),
+      
+      // Root (untuk browsing)
+      '/',
+    ];
+  }
+
+  private resolvePath(relativePath: string): string {
+    // Security: prevent directory traversal
+    const resolved = path.resolve(relativePath);
+    
+    // Cek apakah path diizinkan
+    const isAllowed = this.allowedPaths.some(allowed => resolved.startsWith(allowed));
+    
+    // Juga izinkan path di dalam current working directory
+    if (!isAllowed && !resolved.startsWith(process.cwd())) {
+      logger.warn(`Access denied for path: ${resolved}`);
+      throw new Error(`Access denied: path not allowed - ${resolved}`);
+    }
+    
+    // Cek apakah path exists
+    if (!fs.existsSync(resolved) && !resolved.includes('*')) {
+      logger.debug(`Path does not exist: ${resolved}`);
+    }
+    
+    return resolved;
+  }
+
+  // Method untuk mendapatkan path workspace default
+  getDefaultWorkspace(): string {
+    return '/storage/emulated/0/workspace';
+  }
+
+  list(dirPath: string): FileEntry[] {
+    try {
+      const fullPath = this.resolvePath(dirPath);
+      if (!fs.existsSync(fullPath)) return [];
+
+      const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+      return entries.map(entry => {
+        const entryPath = path.join(fullPath, entry.name);
+        try {
+          const stats = fs.statSync(entryPath);
+          return {
+            name: entry.name,
+            path: entryPath,
+            type: entry.isDirectory() ? 'directory' : 'file',
+            size: stats.size,
+            modified: stats.mtimeMs,
+            created: stats.birthtimeMs,
+            mimeType: entry.isFile() ? this.getMimeType(entry.name) : undefined,
+          };
+        } catch (statError) {
+          // Skip files that can't be accessed (permission issues)
+          logger.warn(`Cannot stat ${entryPath}: ${statError}`);
+          return null;
+        }
+      }).filter((entry): entry is FileEntry => entry !== null);
+    } catch (error) {
+      logger.error(`Error listing directory ${dirPath}: ${error}`);
+      return [];
+    }
+  }
+
+  readFile(filePath: string): { content: string; mimeType: string } {
+    const fullPath = this.resolvePath(filePath);
+    if (!fs.existsSync(fullPath)) throw new Error('File not found');
+    
+    // Cek apakah file binary
+    if (!this.isTextFile(fullPath)) {
+      // Untuk binary file, return base64
+      const buffer = fs.readFileSync(fullPath);
+      return {
+        content: buffer.toString('base64'),
+        mimeType: this.getMimeType(fullPath),
+      };
+    }
+
+    const content = fs.readFileSync(fullPath, 'utf8');
+    return {
+      content,
+      mimeType: this.getMimeType(fullPath),
+    };
+  }
+
+  writeFile(filePath: string, content: string): void {
+    const fullPath = this.resolvePath(filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(fullPath, content);
+    logger.info(`Wrote file: ${fullPath}`);
+  }
+
+  createDirectory(dirPath: string): void {
+    const fullPath = this.resolvePath(dirPath);
+    if (!fs.existsSync(fullPath)) {
+      fs.mkdirSync(fullPath, { recursive: true });
+      logger.info(`Created directory: ${fullPath}`);
+    }
+  }
+
+  rename(oldPath: string, newPath: string): void {
+    const fullOldPath = this.resolvePath(oldPath);
+    const fullNewPath = this.resolvePath(newPath);
+    fs.renameSync(fullOldPath, fullNewPath);
+    logger.info(`Renamed: ${fullOldPath} -> ${fullNewPath}`);
+  }
+
+  delete(itemPath: string): void {
+    const fullPath = this.resolvePath(itemPath);
+    if (!fs.existsSync(fullPath)) {
+      throw new Error('Path not found');
+    }
+    const stats = fs.statSync(fullPath);
+    if (stats.isDirectory()) {
+      fs.rmSync(fullPath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(fullPath);
+    }
+    logger.info(`Deleted: ${fullPath}`);
+  }
+
+  compressToZip(sourcePath: string, zipPath: string): void {
+    const fullSourcePath = this.resolvePath(sourcePath);
+    const fullZipPath = this.resolvePath(zipPath);
+
+    const zip = new AdmZip();
+    const stats = fs.statSync(fullSourcePath);
+
+    if (stats.isDirectory()) {
+      zip.addLocalFolder(fullSourcePath);
+    } else {
+      zip.addLocalFile(fullSourcePath);
+    }
+
+    zip.writeZip(fullZipPath);
+    logger.info(`Compressed to ZIP: ${fullZipPath}`);
+  }
+
+  extractZip(zipPath: string, destPath: string): void {
+    const fullZipPath = this.resolvePath(zipPath);
+    const fullDestPath = this.resolvePath(destPath);
+
+    if (!fs.existsSync(fullDestPath)) {
+      fs.mkdirSync(fullDestPath, { recursive: true });
+    }
+
+    const zip = new AdmZip(fullZipPath);
+    zip.extractAllTo(fullDestPath, true);
+    logger.info(`Extracted ZIP: ${fullZipPath} -> ${fullDestPath}`);
+  }
+
+  getStats(itemPath: string): { size: number; modified: number; created: number; isDirectory: boolean } {
+    const fullPath = this.resolvePath(itemPath);
+    const stats = fs.statSync(fullPath);
+    return {
+      size: stats.size,
+      modified: stats.mtimeMs,
+      created: stats.birthtimeMs,
+      isDirectory: stats.isDirectory(),
+    };
+  }
+
+  searchFiles(rootPath: string, pattern: string): string[] {
+    const fullPath = this.resolvePath(rootPath);
+    if (!fs.existsSync(fullPath)) return [];
+    
+    const results: string[] = [];
+    const regex = new RegExp(pattern, 'i');
+    
+    const search = (dir: string) => {
+      try {
+        const entries = fs.readdirSync(dir);
+        for (const entry of entries) {
+          const entryPath = path.join(dir, entry);
+          try {
+            const stats = fs.statSync(entryPath);
+            if (stats.isDirectory()) {
+              search(entryPath);
+            } else if (regex.test(entry)) {
+              results.push(entryPath);
+            }
+          } catch (e) {
+            // Skip inaccessible files - tidak pakai continue, lanjut ke entry berikutnya
+            // Do nothing, just skip this entry
+          }
+        }
+      } catch (e) {
+        // Skip inaccessible directories
+        // Do nothing
+      }
+    };
+    
+    search(fullPath);
+    return results;
+  }
+
+  private getMimeType(fileName: string): string {
+    const ext = path.extname(fileName).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.txt': 'text/plain',
+      '.js': 'application/javascript',
+      '.ts': 'application/typescript',
+      '.jsx': 'application/javascript',
+      '.tsx': 'application/typescript',
+      '.json': 'application/json',
+      '.html': 'text/html',
+      '.css': 'text/css',
+      '.py': 'text/x-python',
+      '.md': 'text/markdown',
+      '.log': 'text/plain',
+      '.env': 'text/plain',
+      '.sh': 'text/x-shellscript',
+      '.xml': 'application/xml',
+      '.yml': 'text/yaml',
+      '.yaml': 'text/yaml',
+      '.conf': 'text/plain',
+      '.config': 'text/plain',
+      '.ini': 'text/plain',
+      '.properties': 'text/plain',
+      '.gitignore': 'text/plain',
+      '.dockerignore': 'text/plain',
+      '.vue': 'text/html',
+      '.svelte': 'text/html',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.webp': 'image/webp',
+      '.ico': 'image/x-icon',
+      '.zip': 'application/zip',
+      '.tar': 'application/x-tar',
+      '.gz': 'application/gzip',
+      '.7z': 'application/x-7z-compressed',
+      '.rar': 'application/x-rar-compressed',
+      '.pdf': 'application/pdf',
+      '.mp3': 'audio/mpeg',
+      '.mp4': 'video/mp4',
+      '.wav': 'audio/wav',
+      '.ogg': 'audio/ogg',
+      '.webm': 'video/webm',
+      '.go': 'text/x-go',
+      '.rs': 'text/x-rust',
+      '.c': 'text/x-c',
+      '.cpp': 'text/x-c++',
+      '.h': 'text/x-c',
+      '.hpp': 'text/x-c++',
+      '.java': 'text/x-java',
+      '.kt': 'text/x-kotlin',
+      '.swift': 'text/x-swift',
+      '.rb': 'text/x-ruby',
+      '.php': 'text/x-php',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
+  }
+
+  isTextFile(fileName: string): boolean {
+    const textExtensions = [
+      '.txt', '.js', '.ts', '.jsx', '.tsx', '.json', '.html', '.css', 
+      '.py', '.md', '.log', '.env', '.sh', '.xml', '.yml', '.yaml', 
+      '.conf', '.config', '.ini', '.properties', '.gitignore', '.dockerignore',
+      '.vue', '.svelte', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', 
+      '.java', '.kt', '.swift', '.rb', '.php', '.svg'
+    ];
+    const ext = path.extname(fileName).toLowerCase();
+    return textExtensions.includes(ext) || !path.extname(fileName);
+  }
+
+  getAllowedPaths(): string[] {
+    return [...this.allowedPaths];
+  }
+
+  addAllowedPath(path: string): void {
+    if (!this.allowedPaths.includes(path)) {
+      this.allowedPaths.push(path);
+      logger.info(`Added allowed path: ${path}`);
+    }
+  }
+}

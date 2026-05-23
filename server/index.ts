@@ -1,0 +1,231 @@
+import express from 'express';
+import { createServer } from 'http';
+import cors from 'cors';
+import path from 'path';
+import fs from 'fs';
+import multer from 'multer';
+
+import { logger } from './utils/Logger.js';
+import { WorkspaceManager } from './workspace/WorkspaceManager.js';
+import { ProcessManager } from './process/ProcessManager.js';
+import { SessionManager } from './sessions/SessionManager.js';
+import { TerminalManager } from './terminal/TerminalManager.js';
+import { FileManager } from './filesystem/FileManager.js';
+import { StatsCollector } from './stats/StatsCollector.js';
+import { SocketManager } from './websocket/SocketManager.js';
+
+const app = express();
+const httpServer = createServer(app);
+const PORT = process.env.PORT || 3001;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Multer setup for file uploads
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const uploadPath = (req.query.path as string) || path.join(process.cwd(), 'uploads');
+      if (!fs.existsSync(uploadPath)) {
+        fs.mkdirSync(uploadPath, { recursive: true });
+      }
+      cb(null, uploadPath);
+    },
+    filename: (req, file, cb) => {
+      cb(null, file.originalname);
+    },
+  }),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max
+  },
+});
+
+// Upload endpoint
+app.post('/api/upload', upload.array('files'), (req, res) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    res.json({
+      success: true,
+      files: files?.map(f => ({
+        name: f.filename,
+        size: f.size,
+        path: f.path,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Download endpoint
+app.get('/api/download', (req, res) => {
+  try {
+    const filePath = req.query.path as string;
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+    res.download(filePath);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    platform: process.platform,
+    version: process.version,
+  });
+});
+
+// API Routes for non-realtime operations
+app.get('/api/sessions', (req, res) => {
+  res.json({ sessions: sessionManager.getAll() });
+});
+
+app.get('/api/sessions/:id', (req, res) => {
+  const session = sessionManager.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  res.json({ session });
+});
+
+app.post('/api/sessions', (req, res) => {
+  try {
+    const session = sessionManager.create(req.body);
+    res.json({ success: true, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/sessions/:id/start', async (req, res) => {
+  try {
+    const session = await sessionManager.start(req.params.id);
+    res.json({ success: true, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/sessions/:id/stop', (req, res) => {
+  try {
+    const session = sessionManager.stop(req.params.id);
+    res.json({ success: true, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/sessions/:id/restart', async (req, res) => {
+  try {
+    const session = await sessionManager.restart(req.params.id);
+    res.json({ success: true, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/sessions/:id', (req, res) => {
+  try {
+    const result = sessionManager.delete(req.params.id);
+    res.json({ success: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/files', (req, res) => {
+  try {
+    const dirPath = (req.query.path as string) || path.join(process.cwd(), 'workspaces');
+    const files = fileManager.list(dirPath);
+    res.json({ success: true, files });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/stats', async (req, res) => {
+  try {
+    const stats = await statsCollector.getCurrentStats();
+    res.json({ success: true, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Edit session (UPDATE)
+app.put('/api/sessions/:id', (req, res) => {
+  try {
+    const session = sessionManager.update(req.params.id, req.body);
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+    res.json({ success: true, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Initialize core modules
+const workspaceManager = new WorkspaceManager();
+const processManager = new ProcessManager();
+const sessionManager = new SessionManager(workspaceManager, processManager);
+const terminalManager = new TerminalManager();
+const fileManager = new FileManager();
+const statsCollector = new StatsCollector();
+const socketManager = new SocketManager(
+  httpServer,
+  sessionManager,
+  terminalManager,
+  fileManager,
+  statsCollector
+);
+
+// 👇 INI YANG PENTING - START STATS COLLECTION
+statsCollector.startCollecting();
+
+// Serve static files (frontend build)
+const distPath = path.join(process.cwd(), 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.use((req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+// Error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  logger.error('Express error:', err);
+  res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+});
+
+httpServer.listen(PORT, () => {
+  logger.info(`TERMUX RUNTIME CONTROL PANEL`);
+  logger.info(`Server running on port ${PORT}`);
+  logger.info(`WebSocket ready at ws://localhost:${PORT}/socket.io`);
+  logger.info(`API endpoint: http://localhost:${PORT}/api`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received, shutting down gracefully');
+  statsCollector.stop();
+  httpServer.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received, shutting down gracefully');
+  statsCollector.stop();
+  httpServer.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
+});

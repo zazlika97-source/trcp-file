@@ -1,0 +1,17 @@
+[
+  {
+    "id": "session_1779471673419_0hebv",
+    "name": "demo-bot",
+    "command": "echo hello",
+    "cwd": "/mnt/agents/output/app/workspaces/session_1779471673419_0hebv",
+    "env": {},
+    "status": "running",
+    "pid": 11344,
+    "createdAt": 1779471673420,
+    "startedAt": 1779480478435,
+    "stoppedAt": null,
+    "restartCount": 0,
+    "autoRestart": false,
+    "maxRestarts": 5
+  }
+]
