@@ -30,18 +30,18 @@ apt install -y nodejs
 
 # 4. Buat folder dan copy project
 echo -e "\n${CYAN}[4/7] Setting up project folder...${NC}"
-mkdir -p /root/termux2
-cd /root/termux2
+mkdir -p /root/trcp-file
+cd /root/trcp-file
 
 # Copy dari storage jika ada
-if [ -d "/sdcard/termux2" ]; then
+if [ -d "/sdcard/trcp-file" ]; then
     cp -r /sdcard/termux2/* /root/termux2/
 fi
 
 # 5. Install dependencies
 echo -e "\n${CYAN}[5/7] Installing npm dependencies...${NC}"
 npm install --force
-
+npm install -g typescipt
 # 6. Fix node-pty (build dari source)
 echo -e "\n${CYAN}[6/7] Building node-pty from source...${NC}"
 rm -rf node_modules/node-pty
@@ -49,7 +49,7 @@ npm install node-pty --build-from-source
 
 # 7. Build frontend
 echo -e "\n${CYAN}[7/7] Building frontend...${NC}"
-npm run build
+npm run dev
 
 echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}✅ TRCP Setup Complete!${NC}"
