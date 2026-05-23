@@ -2,7 +2,14 @@
 import { useState, useEffect } from 'react';
 
 interface Stats {
-  cpu: { usage: number; cores: number[]; speed: number; uptime: number; loadAverage: number[] };
+  cpu: { 
+    usage: number; 
+    cores: number[]; 
+    model: string;      // ← TAMBAHKAN INI
+    speed: number; 
+    uptime: number; 
+    loadAverage: number[] 
+  };
   memory: { total: number; used: number; free: number; usage: number };
   storage: { total: number; used: number; free: number; usage: number };
   network: { rx: number; tx: number; rxSec: number; txSec: number };
@@ -12,7 +19,14 @@ interface Stats {
 
 export function useStats(): Stats {
   const [stats, setStats] = useState<Stats>({
-    cpu: { usage: 0, cores: [], speed: 0, uptime: 0, loadAverage: [0, 0, 0] },
+    cpu: { 
+      usage: 0, 
+      cores: [], 
+      model: 'Unknown',   // ← TAMBAHKAN INI
+      speed: 0, 
+      uptime: 0, 
+      loadAverage: [0, 0, 0] 
+    },
     memory: { total: 0, used: 0, free: 0, usage: 0 },
     storage: { total: 0, used: 0, free: 0, usage: 0 },
     network: { rx: 0, tx: 0, rxSec: 0, txSec: 0 },
@@ -33,6 +47,7 @@ export function useStats(): Stats {
             cpu: {
               usage: s.cpu?.usage || 0,
               cores: s.cpu?.cores || [],
+              model: s.cpu?.model || 'Unknown',  // ← TAMBAHKAN INI
               speed: s.cpu?.speed || 0,
               uptime: s.cpu?.uptime || prev.cpu.uptime,
               loadAverage: s.cpu?.loadAverage || [0, 0, 0],
